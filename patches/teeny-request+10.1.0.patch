@@ -1,0 +1,12 @@
+diff --git a/node_modules/teeny-request/build/src/index.js b/node_modules/teeny-request/build/src/index.js
+index a101736..0114f10 100644
+--- a/node_modules/teeny-request/build/src/index.js
++++ b/node_modules/teeny-request/build/src/index.js
+@@ -148,6 +148,7 @@ function teenyRequest(reqOpts, callback) {
+             throw new Error('Multipart without callback is not implemented.');
+         }
+         const boundary = (0, crypto_1.randomUUID)();
++        options.headers = options.headers || {};
+         options.headers['Content-Type'] =
+             `multipart/related; boundary=${boundary}`;
+         options.body = createMultipartStream(boundary, multipart);

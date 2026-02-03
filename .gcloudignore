@@ -1,0 +1,10 @@
+# No subas cosas pesadas
+node_modules/
+.git/
+.vscode/
+
+# PERO asegúrate de incluir archivos necesarios para build
+!package.json
+!package-lock.json
+!tsconfig.json
+!Dockerfile
