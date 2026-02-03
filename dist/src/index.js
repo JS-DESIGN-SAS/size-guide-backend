@@ -31,10 +31,9 @@ app.use((req, res, next) => {
     else if (isAllowed && requestOrigin) {
         res.setHeader("Access-Control-Allow-Origin", requestOrigin);
     }
-    // Preflight: reflejar métodos/headers solicitados por el navegador
-    const reqMethod = req.headers["access-control-request-method"];
+    // Preflight: métodos permitidos; headers = los que pide el navegador o Content-Type, Authorization
     const reqHeaders = req.headers["access-control-request-headers"];
-    res.setHeader("Access-Control-Allow-Methods", typeof reqMethod === "string" ? reqMethod : "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", typeof reqHeaders === "string" ? reqHeaders : "Content-Type, Authorization");
     // Cachea el preflight (opcional pero recomendable)
     res.setHeader("Access-Control-Max-Age", "600");
@@ -143,6 +142,7 @@ app.get("/api/data", async (req, res) => {
 app.post("/api/size", async (req, res) => {
     try {
         const body = req.body;
+        (0, logger_1.logInfo)("api/size request", { bodyKeys: body ? Object.keys(body) : [], rawBody: body });
         const shop = typeof body?.shop === "string" ? body.shop.trim() : "";
         const sizeGuideIdRaw = body?.size_guide_id != null ? String(body.size_guide_id) : "";
         const waist = typeof body?.waist === "number" ? body.waist : Number(body?.waist);
@@ -152,10 +152,13 @@ app.post("/api/size", async (req, res) => {
         // pecho opcional: para measurement_type 'inferior' puede no enviarse (se usa 0)
         const pecho = Number.isFinite(chest) ? chest : 0;
         const guideId = sizeGuideIdRaw ? parseInt(sizeGuideIdRaw, 10) : NaN;
+        (0, logger_1.logInfo)("api/size parsed", { shop, sizeGuideIdRaw, guideId, waist, hips, pecho });
         if (!Number.isFinite(guideId) || guideId < 1) {
+            (0, logger_1.logError)("api/size invalid input", { reason: "size_guide_id", sizeGuideIdRaw, guideId });
             return res.status(400).json({ error: "INVALID_INPUT", message: "size_guide_id is required and must be a positive integer" });
         }
         if (!Number.isFinite(waist) || !Number.isFinite(hips)) {
+            (0, logger_1.logError)("api/size invalid input", { reason: "waist or hips", waist, hips });
             return res.status(400).json({ error: "INVALID_INPUT", message: "waist and hips must be numbers" });
         }
         const result = await (0, supabase_1.getSizeRecommendation)({
@@ -165,17 +168,20 @@ app.post("/api/size", async (req, res) => {
             cadera: hips,
         });
         if (result.error) {
+            (0, logger_1.logError)("api/size Supabase error", { message: result.error.message, code: result.error.code });
             if (result.error.message.includes("not configured")) {
                 return res.status(503).json({ error: "SERVICE_UNAVAILABLE", message: result.error.message });
             }
             return res.status(400).json({ error: "SIZE_QUERY_ERROR", message: result.error.message, code: result.error.code });
         }
         if (!result.data) {
+            (0, logger_1.logInfo)("api/size no match", { guideId, waist, hips, pecho });
             return res.status(404).json({
                 error: "NO_SIZE_MATCH",
                 message: "No size found for the given measurements in this guide",
             });
         }
+        (0, logger_1.logInfo)("api/size success", { guideId, recommended_size: result.data.talla, based_on: result.data.basado_en });
         res.status(200).json({
             shop: shop || undefined,
             size_guide_id: guideId,

@@ -153,6 +153,8 @@ app.get("/api/data", async (req, res) => {
 app.post("/api/size", async (req, res) => {
   try {
     const body = req.body as Record<string, unknown>;
+    logInfo("api/size request", { bodyKeys: body ? Object.keys(body) : [], rawBody: body });
+
     const shop = typeof body?.shop === "string" ? body.shop.trim() : "";
     const sizeGuideIdRaw = body?.size_guide_id != null ? String(body.size_guide_id) : "";
     const waist = typeof body?.waist === "number" ? body.waist : Number(body?.waist);
@@ -163,10 +165,14 @@ app.post("/api/size", async (req, res) => {
     const pecho = Number.isFinite(chest) ? chest : 0;
 
     const guideId = sizeGuideIdRaw ? parseInt(sizeGuideIdRaw, 10) : NaN;
+    logInfo("api/size parsed", { shop, sizeGuideIdRaw, guideId, waist, hips, pecho });
+
     if (!Number.isFinite(guideId) || guideId < 1) {
+      logError("api/size invalid input", { reason: "size_guide_id", sizeGuideIdRaw, guideId });
       return res.status(400).json({ error: "INVALID_INPUT", message: "size_guide_id is required and must be a positive integer" });
     }
     if (!Number.isFinite(waist) || !Number.isFinite(hips)) {
+      logError("api/size invalid input", { reason: "waist or hips", waist, hips });
       return res.status(400).json({ error: "INVALID_INPUT", message: "waist and hips must be numbers" });
     }
 
@@ -178,6 +184,7 @@ app.post("/api/size", async (req, res) => {
     });
 
     if (result.error) {
+      logError("api/size Supabase error", { message: result.error.message, code: result.error.code });
       if (result.error.message.includes("not configured")) {
         return res.status(503).json({ error: "SERVICE_UNAVAILABLE", message: result.error.message });
       }
@@ -185,12 +192,14 @@ app.post("/api/size", async (req, res) => {
     }
 
     if (!result.data) {
+      logInfo("api/size no match", { guideId, waist, hips, pecho });
       return res.status(404).json({
         error: "NO_SIZE_MATCH",
         message: "No size found for the given measurements in this guide",
       });
     }
 
+    logInfo("api/size success", { guideId, recommended_size: result.data.talla, based_on: result.data.basado_en });
     res.status(200).json({
       shop: shop || undefined,
       size_guide_id: guideId,
