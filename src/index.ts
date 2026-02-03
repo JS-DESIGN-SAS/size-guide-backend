@@ -20,11 +20,26 @@ app.use((req, res, next) => {
   const isAllowed =
     typeof requestOrigin === "string" &&
     (allowed.includes("*") || allowed.includes(requestOrigin));
-  if (isAllowed && requestOrigin) {
+  // Importante: variar por origen para caches intermedias (CDN/proxy)
+  res.setHeader("Vary", "Origin");
+
+  if (allowed.includes("*")) {
+    // Si permites "*", NO uses credentials (cookies). Para fetch sin credenciales está OK.
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  } else if (isAllowed && requestOrigin) {
     res.setHeader("Access-Control-Allow-Origin", requestOrigin);
   }
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+
+  // Preflight: reflejar métodos/headers solicitados por el navegador
+  const reqMethod = req.headers["access-control-request-method"];
+  const reqHeaders = req.headers["access-control-request-headers"];
+  res.setHeader("Access-Control-Allow-Methods", typeof reqMethod === "string" ? reqMethod : "GET, POST, OPTIONS");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    typeof reqHeaders === "string" ? reqHeaders : "Content-Type, Authorization"
+  );
+  // Cachea el preflight (opcional pero recomendable)
+  res.setHeader("Access-Control-Max-Age", "600");
   if (req.method === "OPTIONS") {
     return res.status(204).end();
   }
