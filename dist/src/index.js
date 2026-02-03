@@ -12,6 +12,7 @@ const fashn_1 = require("./fashn");
 const drive_1 = require("./drive");
 const shopifyAuth_1 = require("./shopifyAuth");
 const shopifyProxy_1 = require("./shopifyProxy");
+const supabase_1 = require("./supabase");
 const logger_1 = require("../shared/logger");
 const app = (0, express_1.default)();
 app.use(express_1.default.json({ limit: "2mb" }));
@@ -104,8 +105,81 @@ app.get("/", (_req, res) => {
     res.status(200).json({
         ok: true,
         message: "Tryon backend",
-        endpoints: ["/health", "/tryon", "/auth", "/auth/callback", "/proxy", "/shopify/proxy"]
+        endpoints: ["/health", "/api/data", "/api/size", "/tryon", "/auth", "/auth/callback", "/proxy", "/shopify/proxy"]
     });
+});
+// --- Endpoint público: GET /api/data (consultas Supabase, sin auth) ---
+app.get("/api/data", async (req, res) => {
+    const table = typeof req.query.table === "string" ? req.query.table.trim() : undefined;
+    try {
+        const result = await (0, supabase_1.queryTable)(table);
+        if (result.error) {
+            if (result.error.message.includes("not configured")) {
+                return res.status(503).json({ error: "SERVICE_UNAVAILABLE", message: result.error.message });
+            }
+            return res.status(400).json({ error: "QUERY_ERROR", message: result.error.message, code: result.error.code });
+        }
+        res.status(200).json({ data: result.data });
+    }
+    catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        (0, logger_1.logError)("api/data failed", { error: message });
+        res.status(500).json({ error: "INTERNAL_ERROR", message });
+    }
+});
+// --- Endpoint público: POST /api/size (recomendación de talla vía Supabase RPC, sin auth) ---
+// Body: { shop, size_guide_id, measurement_type?, waist, hips, chest? | pecho? }
+app.post("/api/size", async (req, res) => {
+    try {
+        const body = req.body;
+        const shop = typeof body?.shop === "string" ? body.shop.trim() : "";
+        const sizeGuideIdRaw = body?.size_guide_id != null ? String(body.size_guide_id) : "";
+        const waist = typeof body?.waist === "number" ? body.waist : Number(body?.waist);
+        const hips = typeof body?.hips === "number" ? body.hips : Number(body?.hips);
+        const chestRaw = body?.chest ?? body?.pecho;
+        const chest = typeof chestRaw === "number" ? chestRaw : Number(chestRaw);
+        // pecho opcional: para measurement_type 'inferior' puede no enviarse (se usa 0)
+        const pecho = Number.isFinite(chest) ? chest : 0;
+        const guideId = sizeGuideIdRaw ? parseInt(sizeGuideIdRaw, 10) : NaN;
+        if (!Number.isFinite(guideId) || guideId < 1) {
+            return res.status(400).json({ error: "INVALID_INPUT", message: "size_guide_id is required and must be a positive integer" });
+        }
+        if (!Number.isFinite(waist) || !Number.isFinite(hips)) {
+            return res.status(400).json({ error: "INVALID_INPUT", message: "waist and hips must be numbers" });
+        }
+        const result = await (0, supabase_1.getSizeRecommendation)({
+            guideId,
+            pecho,
+            cintura: waist,
+            cadera: hips,
+        });
+        if (result.error) {
+            if (result.error.message.includes("not configured")) {
+                return res.status(503).json({ error: "SERVICE_UNAVAILABLE", message: result.error.message });
+            }
+            return res.status(400).json({ error: "SIZE_QUERY_ERROR", message: result.error.message, code: result.error.code });
+        }
+        if (!result.data) {
+            return res.status(404).json({
+                error: "NO_SIZE_MATCH",
+                message: "No size found for the given measurements in this guide",
+            });
+        }
+        res.status(200).json({
+            shop: shop || undefined,
+            size_guide_id: guideId,
+            recommended_size: result.data.talla,
+            based_on: result.data.basado_en,
+            value_used: result.data.valor_usado,
+            min_value: result.data.min_value,
+            max_value: result.data.max_value,
+        });
+    }
+    catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        (0, logger_1.logError)("api/size failed", { error: message });
+        res.status(500).json({ error: "INTERNAL_ERROR", message });
+    }
 });
 // --- Shopify OAuth (instalación) y App Proxy ---
 if (config_1.config.shopifyEnabled) {

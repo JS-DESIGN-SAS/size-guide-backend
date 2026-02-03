@@ -40,6 +40,12 @@ exports.config = {
     fashnApiKey: (0, env_1.getEnv)("FASHN_API_KEY", ""),
     /** ID de carpeta de Google Drive donde guardar fotos del usuario. Env: GOOGLE_DRIVE_UPLOAD_FOLDER_ID (o DRIVE_FOLDER_ID). Si está vacío no se sube. */
     driveFolderId: (0, env_1.getEnv)("GOOGLE_DRIVE_UPLOAD_FOLDER_ID", "") || (0, env_1.getEnv)("DRIVE_FOLDER_ID", ""),
+    /** Supabase: URL del proyecto. Env: SUPABASE_URL */
+    supabaseUrl: (0, env_1.getEnv)("SUPABASE_URL", "").replace(/\/$/, ""),
+    /** Supabase: anon key (o service_role si necesitas bypass RLS). Env: SUPABASE_ANON_KEY o SUPABASE_SERVICE_ROLE_KEY */
+    supabaseAnonKey: (0, env_1.getEnv)("SUPABASE_ANON_KEY", "") || (0, env_1.getEnv)("SUPABASE_SERVICE_ROLE_KEY", ""),
+    /** Tabla por defecto para el endpoint público de consulta. Env: SUPABASE_DEFAULT_TABLE */
+    supabaseDefaultTable: (0, env_1.getEnv)("SUPABASE_DEFAULT_TABLE", "items"),
 };
 exports.ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
 exports.ALLOWED_IMAGE_EXTENSIONS = {
