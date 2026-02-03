@@ -1,215 +1,111 @@
-# Pipelines
+# Size Guide Backend (Try-on + Supabase)
 
-Este repo contiene **integrations (jobs)** para automatizar procesos con **Shopify** y **BigQuery**, y un **backend Try-on** para Shopify (widget virtual try-on). La estructura actual está enfocada en integraciones Shopify y el servicio Try-on en Cloud Run.
+Backend en **Express + TypeScript** para:
 
-La ejecución está pensada para producción en **Google Cloud Run**, disparada por **Cloud Scheduler** con triggers tipo **cron**, y con secretos gestionados en **Secret Manager**.
+- **Try-on virtual** en Shopify: recibe imagen del usuario + variante, obtiene imagen de producto desde BigQuery y genera la imagen resultado con **Gemini** o **FASHN**.
+- **Recomendación de talla**: endpoint público que consulta **Supabase** (RPC) para devolver la talla según medidas (pecho, cintura, cadera).
+- **Shopify App**: OAuth (instalación), sesión en memoria y App Proxy con validación HMAC.
 
-## Cómo funciona (proceso general)
+Pensado para ejecución en **Google Cloud Run** (puerto configurable por env, por defecto 8080).
 
-- **Build/Deploy**: Se construye una imagen Docker que compila TypeScript y arranca un servidor HTTP (Express).
-- **Ejecución**: Cloud Scheduler hace un `POST` al servicio de Cloud Run hacia un endpoint específico del job.
-- **Extracción**: Cada job llama a su API origen (HTTP/GraphQL) con credenciales desde variables de entorno (inyectadas desde Secret Manager).
-- **Transformación**: Se normalizan campos (fechas, ids, montos) y se preparan datos para BigQuery o para acciones directas en Shopify.
-- **Carga a BigQuery**: Dependiendo del job, se ejecutan queries o cargas CSV.
-- **Observabilidad**: Logs en JSON (`shared/logger.ts`) para trazabilidad (conteos, páginas, jobId de BigQuery).
+## Cómo funciona
 
-## Arquitectura (alto nivel)
+- **Build**: `npm run build` compila TypeScript (`src/`, `shared/`) a `dist/`.
+- **Arranque**: `node dist/src/index.js` (o `npm run start`). El servidor escucha en `0.0.0.0:PORT`.
+- **Docker**: el Dockerfile hace `npm ci` → copia código → `npm run build` → `CMD ["npm", "run", "start"]`. No hay multi-stage; la imagen final incluye fuente y `node_modules`.
 
-Componentes:
+## Endpoints
 
-- **Cloud Scheduler (cron)** → llama por HTTP
-- **Cloud Run (contenedor)** → expone API y ejecuta jobs
-- **Secret Manager** → credenciales/API keys/tokens
-- **BigQuery** → fuente/destino de datos
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| GET | `/health` | Healthcheck (200 ok). |
+| GET | `/` | Info del servicio y lista de endpoints (JSON). |
+| GET | `/api/data` | Consulta Supabase: `?table=nombre` (opcional). Devuelve filas de la tabla. Requiere Supabase configurado. |
+| POST | `/api/size` | **Recomendación de talla**. Body JSON: `shop`, `size_guide_id`, `waist`, `hips`, `chest` o `pecho` (opcional). Ejecuta RPC `get_size_recommendation` en Supabase y devuelve `recommended_size`, `based_on`, etc. Público (sin auth). |
+| POST | `/tryon` | Try-on virtual: multipart `image` + `variantId` (y `shop` si no hay firma). Requiere firma HMAC de App Proxy cuando Shopify está configurado. Responde con `{ imageBase64 }`. |
+| GET | `/auth?shop=...` | Inicia OAuth de la app Shopify (solo si Shopify configurado). |
+| GET | `/auth/callback` | Callback OAuth (solo si Shopify configurado). |
+| GET/POST | `/proxy` | App Proxy (HMAC); solo si Shopify configurado. |
+| GET/POST | `/shopify/proxy` | App Proxy bajo `/shopify/proxy` (incluye POST para tryon con firma). |
 
-Flujo:
+## Configuración (variables de entorno)
 
-1) Scheduler dispara `POST /run/<jobName>` (ej. `shopify.inventory_update`).  
-2) Cloud Run resuelve `jobName` en el registry (`src/registry.ts`).  
-3) Se ejecuta `run()` del job correspondiente (`integrations/**/jobs/**/job.ts`).  
-4) El job ejecuta la lógica correspondiente y devuelve un JSON con métricas y `jobId`.
+No se carga `.env` en código; las variables se inyectan por entorno (Docker, Cloud Run, etc.).
 
-## Endpoints y ejecución
-
-El servidor expone:
-
-- `GET /health`: healthcheck
-- `POST /run/:jobName`: ejecuta un job registrado
-
-Nombres de jobs soportados (ver `src/registry.ts`):
-
-- Shopify:
-  - `shopify.inventory_update`
-  - `shopify.update_status`
-  - `shopify.reorder_collections`
-  - `shopify.publish_online_store`
-  - `shopify.discount_metafield`
-
-Ejemplo (local):
-
-```bash
-npm install
-npm run dev
-
-# en otra terminal:
-curl -X POST "http://localhost:8080/run/shopify.inventory_update"
-```
-
-## Secretos y configuración
-
-Los jobs leen configuración desde variables de entorno. En Cloud Run normalmente se inyectan así:
-
-- **Secret Manager → Cloud Run env vars**: credenciales (tokens, API keys).
-- **Env vars “no secret”**: dataset/tablas, límites, ventanas de fechas, concurrencia.
-
-En el código se valida presencia de secretos críticos con `mustGetEnv(...)` (falla rápido si falta alguno).
-
-## BigQuery: estrategias de uso
-
-- **Queries**: lectura de datos para decisiones o acciones en Shopify.
-- **CSV load**: `loadCsvToBigQuery(...)` hace `table.load()` con schema explícito.
-
-## Operación en GCP (Cloud Scheduler → Cloud Run)
-
-Recomendación típica (conceptual):
-
-- Cloud Scheduler llama al URL de Cloud Run con `POST` al path `/run/<jobName>`.
-- Se configura autenticación con **OIDC** usando un service account con `roles/run.invoker`.
-- Cada job tiene su cron (frecuencia) y opcionalmente su ventana/parametrización vía env vars.
-
-> Nota: este repo no contiene la IaC de Scheduler/Run; la configuración vive en GCP.
-
-## Estructura del repo
-
-- `src/server.ts`: servidor HTTP (Express) con `/run/:jobName`
-- `src/registry.ts`: mapea `jobName` → función `run()` del job
-- `integrations/shopify/jobs/<job>/job.ts`: lógica del job de Shopify
-- `integrations/shopify/shared/bigquery.ts`: helpers para ejecutar queries y cargas CSV en BigQuery
-- `integrations/shopify/shared/shopifyClient.ts`: cliente GraphQL de Shopify
-- `shared/*`: utilidades comunes (env, logger, csv)
-
-## Try-on backend (Cloud Run)
-
-Servicio para el widget de virtual try-on en Shopify: recibe imagen del usuario + variante, procesa vía BigQuery + n8n y devuelve una imagen resultado.
-
-### Variables de entorno (obligatorias para tryon)
-
-| Variable | Descripción |
-|----------|-------------|
-| `GCS_BUCKET` | Bucket de Google Cloud Storage para inputs/outputs |
-| `N8N_ENDPOINT_URL` | URL del endpoint n8n (recibe JSON, devuelve `resultBase64`) |
-| `INTERNAL_TOKEN` | Token para proteger `POST /internal/process/:jobId` (header `x-internal-token`) |
-| `BIGQUERY_PROJECT` o `GCLOUD_PROJECT` | Proyecto de BigQuery para el query de imagen de producto |
-
-### Variables opcionales
+### Comunes
 
 | Variable | Default | Descripción |
 |----------|---------|-------------|
-| `PORT` | `8080` | Puerto del servidor |
-| `SIGNED_URL_TTL_HOURS` | `24` | TTL de las signed URLs de GCS (horas) |
-| `MAX_FILE_MB` | `10` | Tamaño máximo de la imagen del usuario (MB) |
-| `PROCESS_MODE` | `inline` | `inline` = procesar con setImmediate; `cloud-tasks` = encolar Cloud Tasks (TODO) |
+| `PORT` | `8080` | Puerto del servidor. |
+| `MAX_FILE_MB` | `10` | Tamaño máximo de imagen (MB) para tryon. |
+| `CORS_ALLOWED_ORIGINS` | Ver abajo | Orígenes permitidos (CORS), separados por coma. Por defecto: `https://js-tryon.myshopify.com,https://juliana-sanchez-ecommerce.myshopify.com`. |
 
-### Endpoints
-
-- `GET /health` — healthcheck
-- `POST /tryon` — multipart: `image`, `variantId`, `shop` → responde `{ "jobId": "..." }`
-- `GET /tryon/:jobId` — estado: `{ status }` o `{ status, resultUrl }` o `{ status, error }`
-- `POST /internal/process/:jobId` — procesa el job (header `x-internal-token: <INTERNAL_TOKEN>`)
-
-### Cómo correr local
-
-1. Crear un `.env` o exportar las variables (incluyendo credenciales GCP si corres fuera de GCP):
-
-```bash
-export GCS_BUCKET=tu-bucket
-export N8N_ENDPOINT_URL=https://tu-n8n.com/webhook/...
-export INTERNAL_TOKEN=un-secreto-fuerte
-export BIGQUERY_PROJECT=tu-proyecto-gcp
-# Opcional: GOOGLE_APPLICATION_CREDENTIALS=/path/to/sa.json
-```
-
-2. Arrancar el servidor:
-
-```bash
-npm install
-npm run build
-npm run start
-# o en desarrollo: npm run dev
-```
-
-3. Pruebas manuales:
-
-```bash
-# Crear job (devuelve jobId)
-curl -F "image=@user.jpg" -F "variantId=42839123456789" -F "shop=js-tryon.myshopify.com" http://localhost:8080/tryon
-
-# Polling del estado (hasta done con resultUrl o error)
-curl http://localhost:8080/tryon/{jobId}
-```
-
-El flujo pasa por `queued` → `running` y termina en `done` (con `resultUrl` firmada) o `error` (con `error`).
-
-### Estructura tryon
-
-- `src/index.ts` — Express: `/tryon`, `/tryon/:jobId`, `/internal/process/:jobId`
-- `src/config.ts` — env vars y validación
-- `src/bigquery.ts` — `getProductImageUrl(variationId)` (query parametrizada)
-- `src/storage.ts` — subida a GCS y signed URLs
-- `src/jobs.ts` — Firestore CRUD (colección `tryon_jobs`)
-- `src/n8n.ts` — llamada a n8n y parse de base64
-- `src/processTryonJob.ts` — orquestación del procesamiento
-
----
-
-## Shopify App (OAuth + App Proxy)
-
-Flujo básico como app proxy: OAuth (instalación), sesión en memoria y endpoint proxy con validación HMAC. Sin UI; solo lo necesario para que la app funcione como proxy.
-
-### Variables de entorno (para OAuth y App Proxy)
+### Try-on (BigQuery + Gemini o FASHN)
 
 | Variable | Descripción |
 |----------|-------------|
-| `SHOPIFY_API_KEY_APP` | API key de la app (Partner Dashboard) |
-| `SHOPIFY_API_SECRET_APP` | API secret de la app |
-| `SCOPES` | Scopes OAuth (ej. `read_products,write_products`). Default: `read_products` |
-| `SHOPIFY_APP_URL` | URL pública estable de la app (tu Cloud Run), sin barra final (ej. `https://tryon-backend-xxx.run.app`) |
-| `DATABASE_URL` | Opcional; por ahora las sesiones se guardan en memoria. Para producción con varias instancias usar Prisma u otro store persistente. |
+| `BIGQUERY_PROJECT` | Proyecto de BigQuery para la consulta de imagen de producto. |
+| `TRYON_LOGIC` | `gemini` o `fashn`. |
+| `GEMINI_API_KEY` | API key de Google AI (Gemini). Necesaria si `TRYON_LOGIC=gemini`. |
+| `GEMINI_TRYON_MODEL` | Modelo Gemini (default: `gemini-3-pro-image-preview`). |
+| `FASHN_BASE_URL` | Base URL de FASHN API (default: `https://api.fashn.ai`). |
+| `FASHN_API_KEY` | API key de FASHN. Necesaria si `TRYON_LOGIC=fashn`. |
+| `GOOGLE_DRIVE_UPLOAD_FOLDER_ID` o `DRIVE_FOLDER_ID` | Opcional. Si está definido, se sube la foto del usuario a esa carpeta de Drive. |
 
-Si **no** configuras estas variables, las rutas `/auth`, `/auth/callback` y `/proxy` no se registran (el resto del servidor sigue funcionando).
+### Supabase (para `/api/data` y `/api/size`)
 
-### Endpoints (públicos pero protegidos)
+| Variable | Descripción |
+|----------|-------------|
+| `SUPABASE_URL` | URL del proyecto Supabase (sin barra final). |
+| `SUPABASE_ANON_KEY` o `SUPABASE_SERVICE_ROLE_KEY` | Key de Supabase (anon o service_role). |
+| `SUPABASE_DEFAULT_TABLE` | Tabla por defecto para `GET /api/data` (default: `items`). |
 
-- **GET /auth?shop=xxx.myshopify.com** — Inicia OAuth: redirige a Shopify para autorización. El merchant instala la app.
-- **GET /auth/callback** — Callback OAuth: recibe `code`, `shop`, `state`; intercambia code por access token, guarda sesión en memoria y redirige a `SHOPIFY_APP_URL` (o admin de la tienda).
-- **GET /proxy** y **POST /proxy** — App Proxy: validan firma HMAC (query params que envía Shopify). Si la firma es válida, responden con un JSON mínimo (`ok`, `shop`, `path_prefix`, `path`). Puedes sustituir esta respuesta por tu lógica (HTML, JSON, etc.).
+Para que **POST /api/size** funcione, en Supabase debe existir la función `public.get_size_recommendation(p_guide_id, p_pecho, p_cintura, p_cadera)`. Crearla ejecutando el script en **Supabase → SQL Editor**: archivo `supabase/get_size_recommendation.sql` de este repo.
 
-### Seguridad
+### Shopify (OAuth + App Proxy)
 
-- OAuth: `state` aleatorio con TTL 10 min; solo se intercambia el code si el state coincide.
-- App Proxy: HMAC-SHA256 sobre los query params (excepto `signature`), ordenados y concatenados; comparación timing-safe con el `signature` que envía Shopify.
-- CORS: si solo usas App Proxy desde el storefront, las peticiones van por el dominio de la tienda; CORS no aplica. Para `/tryon` desde otro dominio (widget) se usan `CORS_ALLOWED_ORIGINS`.
+| Variable | Descripción |
+|----------|-------------|
+| `SHOPIFY_API_KEY_APP` | API key de la app (Partner Dashboard). |
+| `SHOPIFY_API_SECRET_APP` | API secret. |
+| `SHOPIFY_APP_URL` | URL pública de la app (ej. URL de Cloud Run), sin barra final. |
+| `SCOPES` | Scopes OAuth (default: `read_products`). |
+| `DATABASE_URL` | Opcional; sesiones están en memoria. |
 
-### Configuración en Shopify Partner
+Si no se configuran estas variables, no se registran las rutas `/auth`, `/auth/callback`, `/proxy` ni `/shopify/proxy`.
 
-1. **App URL**: `SHOPIFY_APP_URL` (ej. `https://tryon-backend-xxx.run.app`).
-2. **Allowed redirection URL(s)**: `{SHOPIFY_APP_URL}/auth/callback`.
-3. **App Proxy**: subpath y prefix que quieras (ej. `/apps/tryon`); URL del proxy: `{SHOPIFY_APP_URL}/proxy`.
+## Estructura del repo
 
-### Estructura
+- **`src/index.ts`** — Entrada del servidor Express: middlewares (JSON, CORS, rate limit, multer), rutas y `app.listen(port, "0.0.0.0")`.
+- **`src/config.ts`** — Lectura de variables de entorno (`getEnv` desde `shared/env.ts`).
+- **`src/bigquery.ts`** — Consulta de imagen de producto por variante (`getProductImageData`).
+- **`src/gemini.ts`** — Try-on con Gemini.
+- **`src/fashn.ts`** — Try-on con FASHN.
+- **`src/drive.ts`** — Subida de fotos a Google Drive (opcional).
+- **`src/supabase.ts`** — Cliente Supabase y funciones `queryTable`, `getSizeRecommendation` (RPC).
+- **`src/shopifyAuth.ts`** — OAuth: URL de redirección, state, intercambio code → token.
+- **`src/shopifyProxy.ts`** — Validación HMAC del App Proxy.
+- **`src/sessionStore.ts`** — Sesiones en memoria (shop → accessToken).
+- **`shared/`** — Utilidades: `env.ts`, `logger.ts`, `csv.ts`, `httpClient.ts`.
+- **`supabase/get_size_recommendation.sql`** — Script para crear la función RPC en Supabase.
 
-- `src/shopifyAuth.ts` — URL OAuth, verificación de state, intercambio code → token.
-- `src/shopifyProxy.ts` — Validación HMAC del proxy.
-- `src/sessionStore.ts` — Sesiones en memoria (shop → accessToken, scope). Sustituible por Prisma/DATABASE_URL.
-
----
-
-## Desarrollo
+## Desarrollo y producción
 
 ```bash
-npm run dev        # tryon en modo watch (TypeScript)
-npm run dev:server # pipelines (server.ts) en modo watch
-npm run build      # compila a dist/
-npm run start      # ejecuta tryon (dist/src/index.js)
-npm run start:server # ejecuta pipelines (dist/src/server.js)
+npm install
+npm run dev    # tsx watch src/index.ts (desarrollo)
+npm run build  # tsc → dist/
+npm run start  # node dist/src/index.js (producción)
 ```
+
+En Docker (y Cloud Run) el flujo es: instalar deps → copiar código → `npm run build` → `CMD ["npm", "run", "start"]`. El puerto expuesto es 8080 (configurable con `PORT`).
+
+## CORS
+
+El middleware CORS permite los orígenes definidos en `CORS_ALLOWED_ORIGINS`. Para peticiones desde el storefront de Shopify (p. ej. `https://js-tryon.myshopify.com`) a `/api/size`, ese origen debe estar en la lista (ya viene por defecto). Las peticiones OPTIONS (preflight) responden con las cabeceras necesarias (`Access-Control-Allow-Origin`, `Access-Control-Allow-Headers`, etc.).
+
+## Seguridad (Shopify)
+
+- OAuth: `state` aleatorio con TTL; solo se intercambia el code si el state coincide.
+- App Proxy: validación HMAC-SHA256 sobre los query params que envía Shopify.
+- Tryon: cuando Shopify está configurado, `POST /tryon` exige firma HMAC válida en los query params.
