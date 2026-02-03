@@ -30,10 +30,9 @@ app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", requestOrigin);
   }
 
-  // Preflight: reflejar métodos/headers solicitados por el navegador
-  const reqMethod = req.headers["access-control-request-method"];
+  // Preflight: métodos permitidos; headers = los que pide el navegador o Content-Type, Authorization
   const reqHeaders = req.headers["access-control-request-headers"];
-  res.setHeader("Access-Control-Allow-Methods", typeof reqMethod === "string" ? reqMethod : "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader(
     "Access-Control-Allow-Headers",
     typeof reqHeaders === "string" ? reqHeaders : "Content-Type, Authorization"
